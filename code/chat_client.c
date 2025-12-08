@@ -1,8 +1,57 @@
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <signal.h>
+
 #include "udp.h"
 
-#define CLIENT_PORT 10000
+//#define CLIENT_PORT 10000
+#define SERVER_IP "127.0.0.1"
+
+int sd;  //UDP socket descriptor
+int done = 0;
+struct sockaddr_in server_addr, responder_addr;  //server and responder address
+
+FILE *chat_file;  //store msg
+
+// linked list for muted users
+typedef struct MuteNode {
+    char name[64];
+    struct MuteNode *next;
+} MuteNode;
+
+MuteNode *mute_head = NULL;
+pthread_mutex_t mute_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// add to mute list
+void add_mute(char *name) {
+    pthread_mutex_lock(&mute_lock);
+
+    // check if name is in list
+    MuteNode *cur = mute_head;
+    while (cur) {
+        if (strcmp(cur->name, name) == 0) {
+            pthread_mutex_unlock(&mute_lock);
+            return;
+        }
+        cur = cur->next;
+    }
+
+    MuteNode *n = malloc(sizeof(MuteNode));
+    strcpy(n->name, name);
+    n->next = mute_head;
+    mute_head = n;
+
+    pthread_mutex_unlock(&mute_lock);
+}
+
+// remove from mute list
+void remove_mute(char *name) {
+    
+}
 
 // client code
 int main(int argc, char *argv[])
