@@ -4,7 +4,6 @@
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
-#include <signal.h>
 
 #include "udp.h"
 
@@ -15,91 +14,100 @@ int sd;  //UDP socket descriptor
 int done = 0;
 struct sockaddr_in server_addr, responder_addr;  //server and responder address
 
-FILE *chat_file;  //store msg
+FILE *chat_file;  //UI store msg
 
-// linked list for muted users
-typedef struct MuteNode {
-    char name[64];
-    struct MuteNode *next;
-} MuteNode;
 
-MuteNode *mute_head = NULL;
-pthread_mutex_t mute_lock = PTHREAD_MUTEX_INITIALIZER;
+void *listener_thread(void *arg) {
+    char buffer[BUFFER_SIZE];
 
-// add to mute list
-void add_mute(char *name) {
-    pthread_mutex_lock(&mute_lock);
+    // open UI output file
+    char *filename = (char*)arg;
+    chat_file = fopen(filename, "w");
+    if (!chat_file) {
+        perror("fopen");
+        return NULL;
+    }
 
-    // check if name is in list
-    MuteNode *cur = mute_head;
-    while (cur) {
-        if (strcmp(cur->name, name) == 0) {
-            pthread_mutex_unlock(&mute_lock);
-            return;
+    while (!done) {
+        int rc = udp_socket_read(sd, &responder_addr, buffer, BUFFER_SIZE);  // blocking
+
+        if (rc <= 0) {
+            break;
         }
-        cur = cur->next;
+
+        // terminate with '\0'
+        if (rc < BUFFER_SIZE) buffer[rc] = '\0';
+        else buffer[BUFFER_SIZE - 1] = '\0';
+
+        fprintf(chat_file, "%s\n", buffer);
+        fflush(chat_file);
     }
 
-    MuteNode *n = malloc(sizeof(MuteNode));
-    strcpy(n->name, name);
-    n->next = mute_head;
-    mute_head = n;
-
-    pthread_mutex_unlock(&mute_lock);
+    fclose(chat_file);
+    return NULL;
 }
 
-// remove from mute list
-void remove_mute(char *name) {
-    
-}
+void *sender_thread(void *arg) {
+    char client_request[BUFFER_SIZE];
 
-// client code
-int main(int argc, char *argv[])
-{
-    // This function opens a UDP socket,
-    // binding it to all IP interfaces of this machine,
-    // and port number CLIENT_PORT.
-    // (See details of the function in udp.h)
-    int sd = udp_socket_open(CLIENT_PORT);
+    while (!done) {
 
-    // Variable to store the server's IP address and port
-    // (i.e. the server we are trying to contact).
-    // Generally, it is possible for the responder to be
-    // different from the server requested.
-    // Although, in our case the responder will
-    // always be the same as the server.
-    struct sockaddr_in server_addr, responder_addr;
+        printf("> ");
 
-    // Initializing the server's address.
-    // We are currently running the server on localhost (127.0.0.1).
-    // You can change this to a different IP address
-    // when running the server on a different machine.
-    // (See details of the function in udp.h)
-    int rc = set_socket_addr(&server_addr, "127.0.0.1", SERVER_PORT);
+        // disconnect on error
+        if (!fgets(client_request, BUFFER_SIZE, stdin)) {
+            strcpy(client_request, "disconn$");
+        }
 
-    // Storage for request and response messages
-    char client_request[BUFFER_SIZE], server_response[BUFFER_SIZE];
+        // Remove newline
+        client_request[strcspn(client_request, "\n")] = '\0';
 
-    // Demo code (remove later)
-    strcpy(client_request, "Dummy Request");
 
-    // This function writes to the server (sends request)
-    // through the socket at sd.
-    // (See details of the function in udp.h)
-    rc = udp_socket_write(sd, &server_addr, client_request, BUFFER_SIZE);
+        // Send request to server
+        int rc = udp_socket_write(sd, &server_addr, client_request, strlen(client_request) + 1);
 
-    if (rc > 0)
-    {
-        // This function reads the response from the server
-        // through the socket at sd.
-        // In our case, responder_addr will simply be
-        // the same as server_addr.
-        // (See details of the function in udp.h)
-        int rc = udp_socket_read(sd, &responder_addr, server_response, BUFFER_SIZE);
+        if (rc < 0)
+            perror("udp_socket_write");
 
-        // Demo code (remove later)
-        printf("server_response: %s", server_response);
+        // Disconnect
+        if (strcmp(client_request, "disconn$") == 0) {
+            done = 1;
+            break;
+        }
     }
+
+    return NULL;
+}
+
+
+int main(int argc, char *argv[]) {
+
+    // 0 assigns random port
+    sd = udp_socket_open(0);
+
+    // Get client's local port number to make UI output file
+    struct sockaddr_in local_addr;
+    socklen_t len = sizeof(local_addr);
+    getsockname(sd, (struct sockaddr*)&local_addr, &len);
+    int my_port = ntohs(local_addr.sin_port);
+
+    char filename[64];
+    snprintf(filename, sizeof(filename), "iChat_%d.txt", my_port);
+
+
+    int rc = set_socket_addr(&server_addr, SERVER_IP, SERVER_PORT);
+
+    pthread_t sender, listener;
+    pthread_create(&listener, NULL, listener_thread, filename);
+    pthread_create(&sender, NULL, sender_thread, NULL);
+
+    pthread_join(sender, NULL);
+
+    // Signal listener to exit, close socket so udp_socket_read unblocks
+    done = 1;
+    close(sd);
+
+    pthread_join(listener, NULL);
 
     return 0;
 }
